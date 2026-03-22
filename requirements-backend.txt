@@ -3,3 +3,4 @@ uvicorn[standard]
 pymongo
 dnspython
 certifi
+python-dotenv

@@ -1,12 +1,18 @@
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import certifi
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+
+# Load local backend .env first, then default resolution.
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=False)
+load_dotenv(override=False)
 
 
 app = FastAPI(title="ISTQB Backend API", version="1.0.0")
