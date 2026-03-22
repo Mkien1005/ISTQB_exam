@@ -2,9 +2,11 @@ import os
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
+import certifi
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pymongo import MongoClient
+from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
 
 
 app = FastAPI(title="ISTQB Backend API", version="1.0.0")
@@ -19,7 +21,14 @@ def get_mongo_client() -> MongoClient:
     mongo_uri = _get_env("MONGO_URI")
     if not mongo_uri:
         raise RuntimeError("MONGO_URI is required.")
-    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=7000)
+    mongo_kwargs: Dict[str, Any] = {
+        "serverSelectionTimeoutMS": int(_get_env("MONGO_SERVER_SELECTION_TIMEOUT_MS", "12000")),
+        "connectTimeoutMS": int(_get_env("MONGO_CONNECT_TIMEOUT_MS", "12000")),
+        "socketTimeoutMS": int(_get_env("MONGO_SOCKET_TIMEOUT_MS", "20000")),
+        "tlsCAFile": certifi.where(),
+        "retryWrites": True,
+    }
+    client = MongoClient(mongo_uri, **mongo_kwargs)
     client.admin.command("ping")
     return client
 
@@ -106,7 +115,19 @@ def health_check() -> Dict[str, str]:
 
 @app.get("/sets", dependencies=[Depends(auth_guard)])
 def get_sets() -> Dict[str, List[Dict[str, Any]]]:
-    sets_col, _ = get_collections()
+    try:
+        sets_col, _ = get_collections()
+    except ServerSelectionTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection timeout (TLS/network/IP allowlist).",
+        ) from exc
+    except (RuntimeError, PyMongoError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database unavailable: {exc.__class__.__name__}",
+        ) from exc
+
     docs = list(
         sets_col.find({"is_active": {"$ne": False}}).sort([("order", 1), ("set_number", 1)])
     )
@@ -115,7 +136,19 @@ def get_sets() -> Dict[str, List[Dict[str, Any]]]:
 
 @app.get("/sets/{set_number}/questions", dependencies=[Depends(auth_guard)])
 def get_questions_by_set(set_number: int) -> Dict[str, List[Dict[str, Any]]]:
-    _, questions_col = get_collections()
+    try:
+        _, questions_col = get_collections()
+    except ServerSelectionTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection timeout (TLS/network/IP allowlist).",
+        ) from exc
+    except (RuntimeError, PyMongoError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database unavailable: {exc.__class__.__name__}",
+        ) from exc
+
     docs = list(
         questions_col.find(
             {"set_number": set_number, "is_active": {"$ne": False}},
