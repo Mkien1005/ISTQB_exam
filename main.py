@@ -108,7 +108,7 @@ def _clean_question_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-@app.get("/health")
+@app.head("/health")
 def health_check() -> Dict[str, str]:
     return {"status": "ok"}
 
