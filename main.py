@@ -1,4 +1,5 @@
 import os
+import random
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,9 @@ load_dotenv(override=False)
 
 
 app = FastAPI(title="ISTQB Backend API", version="1.0.0")
+
+RANDOM_SET_SIZE = 40
+RANDOM_SET_FALLBACK_NUMBER = 8
 
 
 def _get_env(name: str, default: str = "") -> str:
@@ -87,6 +91,25 @@ def _clean_set_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _is_random_set_doc(doc: Dict[str, Any]) -> bool:
+    code = str(doc.get("code") or "").lower()
+    name = str(doc.get("name") or "").lower()
+    return "random" in code or "random" in name
+
+
+def _extract_random_set_numbers(active_sets: List[Dict[str, Any]]) -> List[int]:
+    numbers = {
+        int(doc["set_number"])
+        for doc in active_sets
+        if isinstance(doc.get("set_number"), int) and _is_random_set_doc(doc)
+    }
+    # Keep compatibility with existing dataset where set 8 is Random.
+    has_fallback = any(doc.get("set_number") == RANDOM_SET_FALLBACK_NUMBER for doc in active_sets)
+    if has_fallback:
+        numbers.add(RANDOM_SET_FALLBACK_NUMBER)
+    return sorted(numbers)
+
+
 def _normalize_correct_indices(doc: Dict[str, Any]) -> List[int]:
     if isinstance(doc.get("correct_indices"), list):
         return [int(v) for v in doc["correct_indices"] if isinstance(v, int)]
@@ -143,7 +166,7 @@ def get_sets() -> Dict[str, List[Dict[str, Any]]]:
 @app.get("/sets/{set_number}/questions", dependencies=[Depends(auth_guard)])
 def get_questions_by_set(set_number: int) -> Dict[str, List[Dict[str, Any]]]:
     try:
-        _, questions_col = get_collections()
+        sets_col, questions_col = get_collections()
     except ServerSelectionTimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -161,6 +184,42 @@ def get_questions_by_set(set_number: int) -> Dict[str, List[Dict[str, Any]]]:
         ).sort([("order", 1), ("_id", 1)])
     )
     return {"items": [_clean_question_doc(doc) for doc in docs]}
+
+
+@app.get("/get-set-random", dependencies=[Depends(auth_guard)])
+def get_set_random() -> Dict[str, List[Dict[str, Any]]]:
+    try:
+        sets_col, questions_col = get_collections()
+    except ServerSelectionTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection timeout (TLS/network/IP allowlist).",
+        ) from exc
+    except (RuntimeError, PyMongoError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database unavailable: {exc.__class__.__name__}",
+        ) from exc
+
+    active_sets = list(sets_col.find({"is_active": {"$ne": False}}))
+    random_set_numbers = _extract_random_set_numbers(active_sets)
+    print(f"get_set_random called: {random_set_numbers}")
+    query: Dict[str, Any] = {"is_active": {"$ne": False}}
+    if random_set_numbers:
+        query["set_number"] = {"$nin": random_set_numbers}
+
+    pool = list(questions_col.find(query))
+    if not pool:
+        return {"items": []}
+
+    sample_size = min(RANDOM_SET_SIZE, len(pool))
+    sampled = random.sample(pool, sample_size)
+    random.shuffle(sampled)
+
+    cleaned_items = [_clean_question_doc(doc) for doc in sampled]
+    for idx, item in enumerate(cleaned_items, start=1):
+        item["order"] = idx
+    return {"items": cleaned_items}
 
 
 if __name__ == "__main__":
